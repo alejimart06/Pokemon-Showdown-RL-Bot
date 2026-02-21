@@ -20,6 +20,8 @@ training:
   save_freq: 50_000           # cada cuantos steps guardar el modelo
   log_dir: "logs/"
   model_dir: "models/"
+  model_dir_heuristic: "models/vs_heuristic/"
+  model_dir_self: "models/vs_self/"
 
 # Hiperparametros del agente PPO
 ppo:

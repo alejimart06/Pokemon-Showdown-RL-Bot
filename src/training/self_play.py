@@ -46,8 +46,13 @@ def run_self_play(
     battle_format = config.get("battle", {}).get("format", "gen9randombattle")
 
     total_timesteps = training_cfg.get("total_timesteps", 1_000_000)
-    model_dir = training_cfg.get("model_dir", "models/")
     update_freq = training_cfg.get("update_opponent_freq", 50_000)
+
+    # Subcarpeta distinta segun el modo de entrenamiento
+    if vs_self:
+        model_dir = training_cfg.get("model_dir_self", "models/vs_self/")
+    else:
+        model_dir = training_cfg.get("model_dir_heuristic", "models/vs_heuristic/")
 
     os.makedirs(model_dir, exist_ok=True)
 
@@ -98,7 +103,7 @@ def run_self_play(
         agent.set_env(env)
 
         # Callback que actualiza los pesos del oponente periodicamente
-        callbacks = build_callbacks(config) + [
+        callbacks = build_callbacks(config, model_dir) + [
             _UpdateOpponentCallback(opponent, agent, update_freq)
         ]
 
@@ -118,7 +123,7 @@ def run_self_play(
             print("[self_play] Creando agente nuevo")
             agent = build_agent(env, config)
 
-        callbacks = build_callbacks(config)
+        callbacks = build_callbacks(config, model_dir)
 
     print(f"[self_play] Formato: {battle_format}")
     print(f"[self_play] Timesteps: {total_timesteps}")

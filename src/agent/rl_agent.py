@@ -64,15 +64,21 @@ def load_agent(path: str, env: VecEnv) -> PPO:
     return agent
 
 
-def build_callbacks(config: dict) -> list:
+def build_callbacks(config: dict, model_dir: str | None = None) -> list:
     """
     Construye los callbacks de entrenamiento:
       - CheckpointCallback: guarda el modelo cada N steps
-      - (EvalCallback se puede anadir cuando tengamos entorno de eval separado)
+
+    Args:
+        config:    configuracion completa del proyecto
+        model_dir: carpeta donde guardar checkpoints. Si es None,
+                   usa training.model_dir del config (fallback).
     """
     training_cfg = config.get("training", {})
-    model_dir = training_cfg.get("model_dir", "models/")
     save_freq = training_cfg.get("save_freq", 50_000)
+
+    if model_dir is None:
+        model_dir = training_cfg.get("model_dir", "models/")
 
     os.makedirs(model_dir, exist_ok=True)
 
