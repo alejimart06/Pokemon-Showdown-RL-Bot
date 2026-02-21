@@ -12,7 +12,7 @@ Estructura del vector de observacion:
 """
 
 import numpy as np
-from poke_env.environment import AbstractBattle, Pokemon, Move, Weather, Field, SideCondition, Status, PokemonType
+from poke_env.battle import AbstractBattle, Pokemon, Move, Weather, Field, SideCondition, Status, PokemonType
 
 # Todos los tipos posibles (18)
 TYPES = [

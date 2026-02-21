@@ -10,7 +10,6 @@ Uso:
 """
 
 import argparse
-import asyncio
 
 
 def parse_args():
@@ -52,22 +51,23 @@ def parse_args():
     return parser.parse_args()
 
 
-async def main():
+def main():
     args = parse_args()
 
     if args.mode == "self_play":
         from src.training.self_play import run_self_play
-        await run_self_play(config_path=args.config, resume=args.resume)
+        run_self_play(config_path=args.config, resume=args.resume)
 
     elif args.mode == "ladder":
+        import asyncio
         from src.training.ladder import run_ladder
-        await run_ladder(
+        asyncio.run(run_ladder(
             config_path=args.config,
             model_path=args.model,
             n_battles=args.battles,
             train=not args.no_train,
-        )
+        ))
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
