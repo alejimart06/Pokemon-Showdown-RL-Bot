@@ -1,0 +1,45 @@
+# Configuracion del servidor de Showdown
+server:
+  local:
+    host: "localhost"
+    port: 8000
+  showdown:
+    host: "sim.smogon.com"
+    port: 8000
+
+# Credenciales (rellenar antes de jugar en el ladder)
+credentials:
+  username: ""
+  password: ""
+
+# Configuracion del entrenamiento
+training:
+  mode: "self_play"          # self_play | ladder | hybrid
+  total_timesteps: 1_000_000
+  n_envs: 4                  # partidas en paralelo durante self-play
+  save_freq: 50_000           # cada cuantos steps guardar el modelo
+  log_dir: "logs/"
+  model_dir: "models/"
+
+# Hiperparametros del agente PPO
+ppo:
+  learning_rate: 0.0003
+  n_steps: 2048
+  batch_size: 64
+  n_epochs: 10
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+  ent_coef: 0.01             # coeficiente de entropia (fomenta exploracion)
+
+# Formato de batalla
+battle:
+  format: "gen9randombattle"
+
+# Reward shaping
+reward:
+  win: 1.0
+  lose: -1.0
+  faint_enemy: 0.15          # por cada pokemon enemigo que desmaya
+  own_faint: -0.15           # por cada pokemon propio que desmaya
+  hp_fraction_coef: 0.01     # pequeño reward por diferencia de HP
