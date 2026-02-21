@@ -3,8 +3,9 @@ main.py
 Punto de entrada del bot de Pokemon Showdown con RL.
 
 Uso:
-  python main.py --mode self_play                  # Entrenar desde cero
-  python main.py --mode self_play --resume models/showdown_ppo_50000_steps
+  python main.py --mode self_play                           # Entrenar desde cero vs heuristico
+  python main.py --mode self_play --resume models/final_model          # Continuar entrenamiento
+  python main.py --mode self_play --vs-self --resume models/final_model  # Self-play real
   python main.py --mode ladder --model models/final_model --battles 100
   python main.py --mode ladder --model models/final_model --battles 50 --no-train
 """
@@ -48,6 +49,11 @@ def parse_args():
         action="store_true",
         help="[ladder] Solo evaluar, no seguir entrenando durante las partidas",
     )
+    parser.add_argument(
+        "--vs-self",
+        action="store_true",
+        help="[self_play] Self-play real: el agente juega contra una copia de si mismo",
+    )
     return parser.parse_args()
 
 
@@ -56,7 +62,7 @@ def main():
 
     if args.mode == "self_play":
         from src.training.self_play import run_self_play
-        run_self_play(config_path=args.config, resume=args.resume)
+        run_self_play(config_path=args.config, resume=args.resume, vs_self=args.vs_self)
 
     elif args.mode == "ladder":
         import asyncio

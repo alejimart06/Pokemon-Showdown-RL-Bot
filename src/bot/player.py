@@ -19,7 +19,7 @@ Nosotros solo necesitamos definir:
 import numpy as np
 from gymnasium.spaces import Box
 from poke_env.environment import SinglesEnv, SingleAgentWrapper
-from poke_env.player import SimpleHeuristicsPlayer
+from poke_env.player import Player, SimpleHeuristicsPlayer
 from poke_env.battle import AbstractBattle
 
 from src.state.encoder import encode_battle, get_observation_size
@@ -86,3 +86,47 @@ def make_single_agent_env(
         )
 
     return SingleAgentWrapper(env, opponent)
+
+
+class SelfPlayOpponent(Player):
+    """
+    Oponente para self-play: usa un modelo PPO guardado para elegir acciones.
+    No aprende — solo actua como oponente fijo con los pesos cargados.
+
+    Cada cierto numero de partidas, self_play.py actualiza sus pesos
+    con el modelo mas reciente del agente (curriculo progresivo).
+    """
+
+    def __init__(self, model, **kwargs):
+        super().__init__(**kwargs)
+        self._model = model
+
+    def update_model(self, model):
+        """Actualiza los pesos del oponente con un modelo mas reciente."""
+        self._model = model
+
+    def choose_move(self, battle: AbstractBattle):
+        obs = encode_battle(battle)
+        action, _ = self._model.predict(obs, deterministic=True)
+        return self._action_to_order(int(action), battle)
+
+    def _action_to_order(self, action: int, battle: AbstractBattle):
+        """
+        Convierte el indice de accion en una orden de poke-env.
+        Mismo mapeo que SinglesEnv.action_to_order para Gen9:
+          0-5:   cambios
+          6-9:   movimientos
+          10-13: movimientos + mega
+          14-17: movimientos + z-move
+          18-21: movimientos + dynamax
+          22-25: movimientos + tera
+        """
+        from poke_env.environment.singles_env import SinglesEnv as _SE
+        from poke_env.battle import Battle
+
+        # Reutilizamos la logica de poke-env directamente
+        try:
+            order = _SE.action_to_order(action, battle, fake=False, strict=False)
+            return order
+        except Exception:
+            return self.choose_random_move(battle)
