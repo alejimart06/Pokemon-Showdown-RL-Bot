@@ -33,6 +33,11 @@ class ShowdownEnv(SinglesEnv):
     """
 
     def __init__(self, reward_config: dict | None = None, **kwargs):
+        # strict=False: si el agente elige una accion invalida, poke-env
+        # selecciona automaticamente una orden valida en lugar de lanzar error.
+        # Esto es necesario durante el entrenamiento inicial donde el agente
+        # aun no ha aprendido a respetar las restricciones del juego.
+        kwargs.setdefault("strict", False)
         super().__init__(**kwargs)
         self._tracker = RewardTracker(reward_config or {})
         obs_size = get_observation_size()
