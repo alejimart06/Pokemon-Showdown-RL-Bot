@@ -13,9 +13,10 @@ build/
 venv/
 env/
 
-# Modelos entrenados (pueden ser muy pesados)
-# Descomenta si quieres ignorarlos:
-# models/
+# Modelos entrenados: solo se suben los modelos finales
+# Los checkpoints intermedios se ignoran siempre
+models/**/showdown_ppo_*.zip
+models/v2_*/
 
 # Logs de TensorBoard
 logs/
