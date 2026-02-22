@@ -1,39 +1,47 @@
 """
 rl_agent.py
-Wrapper del agente PPO de stable-baselines3.
+Wrapper del agente MaskablePPO de sb3-contrib.
 
-Usamos PPO (Proximal Policy Optimization) porque:
-  - Es el algoritmo on-policy mas estable y ampliamente usado
-  - Funciona bien con espacios de accion discretos
-  - stable-baselines3 tiene soporte para action masking con sb3-contrib
+Usamos MaskablePPO (en lugar de PPO normal) porque en Pokemon Showdown
+no todas las acciones son válidas en cada turno:
+  - No puedes cambiar a un pokemon fainted
+  - No puedes usar un movimiento sin PP
+  - No puedes mega/z/tera si no tienes esa opción disponible
+  - Si te queda 1 pokemon, no puedes cambiar
 
-La arquitectura de la red neuronal es una MLP estandar:
+Con PPO normal el agente elige acciones inválidas y poke-env hace fallback
+aleatorio, lo que rompe el aprendizaje. MaskablePPO recibe una máscara
+binaria por step y aplica -inf logit a las acciones inválidas, garantizando
+que el agente NUNCA elija una acción ilegal.
+
+La arquitectura de la red neuronal es una MLP estándar:
   obs_vector -> [256, 256] -> policy head / value head
 """
 
 import os
-from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
+from sb3_contrib import MaskablePPO
+from sb3_contrib.common.maskable.callbacks import MaskableEvalCallback
+from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.vec_env import VecEnv
 
 
-def build_agent(env: VecEnv, config: dict) -> PPO:
+def build_agent(env: VecEnv, config: dict) -> MaskablePPO:
     """
-    Construye un agente PPO nuevo.
+    Construye un agente MaskablePPO nuevo.
 
     Args:
-        env:    entorno vectorizado de gymnasium
-        config: diccionario con hiperparametros (de config.yaml -> ppo)
+        env:    entorno vectorizado de gymnasium (debe exponer action_masks())
+        config: diccionario con hiperparámetros (de config.yaml -> ppo)
     """
-    ppo_cfg = config.get("ppo", {})
+    ppo_cfg      = config.get("ppo", {})
     training_cfg = config.get("training", {})
-    log_dir = training_cfg.get("log_dir", "logs/")
+    log_dir      = training_cfg.get("log_dir", "logs/")
 
     policy_kwargs = dict(
         net_arch=[256, 256],
     )
 
-    agent = PPO(
+    agent = MaskablePPO(
         policy="MlpPolicy",
         env=env,
         learning_rate=ppo_cfg.get("learning_rate", 3e-4),
@@ -52,15 +60,15 @@ def build_agent(env: VecEnv, config: dict) -> PPO:
     return agent
 
 
-def load_agent(path: str, env: VecEnv) -> PPO:
+def load_agent(path: str, env: VecEnv) -> MaskablePPO:
     """
-    Carga un agente previamente guardado.
+    Carga un agente MaskablePPO previamente guardado.
 
     Args:
-        path: ruta al archivo .zip del modelo
+        path: ruta al archivo .zip del modelo (sin extensión)
         env:  entorno vectorizado (necesario para continuar entrenamiento)
     """
-    agent = PPO.load(path, env=env)
+    agent = MaskablePPO.load(path, env=env)
     return agent
 
 
@@ -70,12 +78,11 @@ def build_callbacks(config: dict, model_dir: str | None = None) -> list:
       - CheckpointCallback: guarda el modelo cada N steps
 
     Args:
-        config:    configuracion completa del proyecto
-        model_dir: carpeta donde guardar checkpoints. Si es None,
-                   usa training.model_dir del config (fallback).
+        config:    configuración completa del proyecto
+        model_dir: carpeta donde guardar checkpoints.
     """
     training_cfg = config.get("training", {})
-    save_freq = training_cfg.get("save_freq", 50_000)
+    save_freq    = training_cfg.get("save_freq", 50_000)
 
     if model_dir is None:
         model_dir = training_cfg.get("model_dir", "models/")
