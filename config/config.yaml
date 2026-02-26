@@ -27,12 +27,12 @@ training:
 ppo:
   learning_rate: 0.0003
   n_steps: 2048
-  batch_size: 64
-  n_epochs: 10
+  batch_size: 128            # más estable que 64
+  n_epochs: 15               # más pasadas de gradiente por rollout (era 10)
   gamma: 0.99
   gae_lambda: 0.95
   clip_range: 0.2
-  ent_coef: 0.01             # coeficiente de entropia (fomenta exploracion)
+  ent_coef: 0.005            # menos exploración aleatoria (era 0.01)
 
 # Formato de batalla
 battle:
@@ -42,6 +42,8 @@ battle:
 reward:
   win: 1.0
   lose: -1.0
-  faint_enemy: 0.15          # por cada pokemon enemigo que desmaya
-  own_faint: -0.15           # por cada pokemon propio que desmaya
-  hp_fraction_coef: 0.01     # pequeño reward por diferencia de HP
+  faint_enemy: 0.5           # v3: más incentivo para ir al KO (era 0.35 en v2.1)
+  own_faint: -0.05           # v3: menos miedo a morir → más agresividad
+  hp_fraction_coef: 0.02     # recompensa por diferencia de HP al final
+  switch_penalty: -0.02      # v3: penalización por cambiar innecesariamente
+  boost_coef: 0.03           # v3: recompensa por ganar boosts ofensivos (Swords Dance, etc.)

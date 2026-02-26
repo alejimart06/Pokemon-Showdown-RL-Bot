@@ -43,6 +43,7 @@ import numpy as np
 
 from src.state.encoder import encode_battle
 from src.bot.action_space import get_action_mask
+from src.utils.battle_logger import BattleLogger
 from poke_env.player import Player
 from poke_env.battle import AbstractBattle
 
@@ -51,15 +52,34 @@ from poke_env.battle import AbstractBattle
 # Agente RL con verbose
 # ===========================================================================
 
+def _get_action_label(action: int, battle: AbstractBattle) -> tuple[str, str]:
+    """Devuelve (action_type, action_name) para el logger."""
+    if action < 6:
+        # Switch: buscar el pokemon objetivo por posicion en el equipo
+        available = [p for p in battle.team.values() if not p.active and not p.fainted]
+        target = available[action] if action < len(available) else None
+        name = getattr(target, 'species', f'slot_{action}') if target else f'slot_{action}'
+        return "switch", name
+    else:
+        # Move: slot 0-3 (mega/z-move/dmax/tera usan el mismo slot)
+        slot = (action - 6) % 4
+        own = battle.active_pokemon
+        moves = list(own.moves.values()) if own else []
+        mv = moves[slot] if slot < len(moves) else None
+        name = mv.id if mv else f'move_{slot}'
+        return "move", name
+
+
 class RLBotPlayer(Player):
     """Agente que usa un modelo MaskablePPO para elegir acciones."""
 
-    def __init__(self, model, label: str = "PokeBot", verbose: bool = False, **kwargs):
+    def __init__(self, model, label: str = "PokeBot", verbose: bool = False,
+                 log_dir: str = "logs/", report_every: int = 1000, **kwargs):
         super().__init__(**kwargs)
         self._model   = model
         self._label   = label
         self._verbose = verbose
-        self._turn_log = []
+        self._logger  = BattleLogger(log_dir=log_dir, report_every=report_every)
 
     def choose_move(self, battle: AbstractBattle):
         obs  = encode_battle(battle)
@@ -67,26 +87,28 @@ class RLBotPlayer(Player):
         action, _ = self._model.predict(obs, action_masks=mask, deterministic=True)
         action = int(action)
 
+        action_type, action_name = _get_action_label(action, battle)
+        self._logger.log_turn(battle, action_type, action_name)
+
         if self._verbose:
             own = battle.active_pokemon
             opp = battle.opponent_active_pokemon
             if own and opp:
-                # Determinar tipo de accion
-                if action < 6:
-                    action_str = f"Cambio a slot {action}"
-                elif action < 10:
-                    moves = list(own.moves.values())
-                    mv = moves[action - 6] if action - 6 < len(moves) else None
-                    action_str = f"Movimiento: {mv.id if mv else '?'}"
+                if action_type == "switch":
+                    action_str = f"Cambio a {action_name}"
                 else:
-                    action_str = f"Accion especial {action}"
-
+                    action_str = f"Movimiento: {action_name}"
                 print(f"  [{self._label} T{battle.turn}] "
                       f"{own.species}({own.current_hp_fraction:.0%}) "
                       f"vs {opp.species}({opp.current_hp_fraction:.0%}) "
                       f"-> {action_str}")
 
         return self._action_to_order(action, battle)
+
+    async def on_battle_end(self, battle: AbstractBattle):
+        """Hook de poke-env: llamado al terminar cada batalla."""
+        self._logger.end_battle(battle)
+        await super().on_battle_end(battle)
 
     def _action_to_order(self, action: int, battle: AbstractBattle):
         from poke_env.environment.singles_env import SinglesEnv as _SE
@@ -180,10 +202,11 @@ def _selector_interactivo() -> str | None:
 # ===========================================================================
 
 async def main_async(model_path: str, bot_name: str, n_battles: int,
-                     battle_format: str, verbose: bool):
+                     battle_format: str, verbose: bool, report_every: int = 1000):
     """Conecta el bot al servidor y acepta desafios."""
     print(f"\n  Cargando modelo: {model_path}")
     model = MaskablePPO.load(model_path)
+    print("  Tipo: MaskablePPO")
 
     account_cfg = AccountConfiguration(bot_name, None)
     server_cfg  = LocalhostServerConfiguration
@@ -192,6 +215,7 @@ async def main_async(model_path: str, bot_name: str, n_battles: int,
         model=model,
         label=bot_name,
         verbose=verbose,
+        report_every=report_every,
         account_configuration=account_cfg,
         battle_format=battle_format,
         server_configuration=server_cfg,
@@ -208,6 +232,9 @@ async def main_async(model_path: str, bot_name: str, n_battles: int,
     print(f"{'═' * 62}\n")
 
     await bot.accept_challenges(None, n_battles)
+
+    # Guardar informe al final de la sesion (aunque no se llegue a 1000 partidas)
+    bot._logger.force_report()
 
     # Resultado final
     n_won   = bot.n_won_battles
@@ -267,6 +294,12 @@ def parse_args():
         action="store_true",
         help="Listar modelos disponibles y salir",
     )
+    parser.add_argument(
+        "--report-every",
+        type=int,
+        default=1000,
+        help="Reescribir logs/battle_report.md cada N partidas (default: 1000)",
+    )
     return parser.parse_args()
 
 
@@ -312,6 +345,7 @@ def main():
         n_battles=args.battles,
         battle_format=battle_format,
         verbose=args.verbose,
+        report_every=args.report_every,
     ))
 
 

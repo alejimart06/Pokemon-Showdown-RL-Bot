@@ -30,11 +30,13 @@ from sb3_contrib.common.maskable.utils import get_action_masks
 from sb3_contrib.common.wrappers import ActionMasker
 from poke_env.environment import SinglesEnv, SingleAgentWrapper
 from poke_env.player import Player, SimpleHeuristicsPlayer
+from poke_env.player.battle_order import DefaultBattleOrder
 from poke_env.battle import AbstractBattle
 
 from src.bot.action_space import get_action_mask
 from src.state.encoder import encode_battle, get_observation_size
 from src.agent.reward import RewardTracker
+from src.utils.battle_logger import BattleLogger
 
 
 class ShowdownEnv(SinglesEnv):
@@ -46,11 +48,17 @@ class ShowdownEnv(SinglesEnv):
     (con MaskablePPO esto nunca debería ocurrir).
     """
 
-    def __init__(self, reward_config: dict | None = None, **kwargs):
+    def __init__(self, reward_config: dict | None = None,
+                 log_dir: str = "logs/", **kwargs):
         # strict=True ahora que MaskablePPO garantiza acciones válidas
         kwargs.setdefault("strict", False)   # False como seguridad, mask lo garantiza
         super().__init__(**kwargs)
         self._tracker = RewardTracker(reward_config or {})
+        self._training_logger = BattleLogger(
+            log_dir=log_dir,
+            report_every=1000,
+            report_name="training_battle_report.md",
+        )
         obs_size  = get_observation_size()
         obs_space = Box(
             low=np.full(obs_size, -1.0, dtype=np.float32),
@@ -63,11 +71,26 @@ class ShowdownEnv(SinglesEnv):
 
     def calc_reward(self, battle: AbstractBattle) -> float:
         if battle.finished:
+            self._training_logger.end_battle(battle)
             self._tracker.reset()
         return self._tracker.compute(battle)
 
     def embed_battle(self, battle: AbstractBattle) -> np.ndarray:
         return encode_battle(battle)
+
+    def action_to_order(self, action, battle, fake=False, strict=True):
+        # Turno forzado: lista vacía o solo /choose default → devolver default
+        valid = battle.valid_orders
+        if len(valid) == 0 or (len(valid) == 1 and str(valid[0]) == '/choose default'):
+            return DefaultBattleOrder()
+        return SinglesEnv.action_to_order(action, battle, fake=fake, strict=strict)
+
+    def order_to_action(self, order, battle, fake=False, strict=True):
+        # Turno forzado: lista vacía o solo /choose default → devolver acción -2
+        valid = battle.valid_orders
+        if len(valid) == 0 or (len(valid) == 1 and str(valid[0]) == '/choose default'):
+            return np.int64(-2)
+        return SinglesEnv.order_to_action(order, battle, fake=fake, strict=strict)
 
 
 def _mask_fn(env) -> np.ndarray:
@@ -101,6 +124,7 @@ def _mask_fn(env) -> np.ndarray:
 def make_single_agent_env(
     reward_config: dict | None = None,
     opponent=None,
+    log_dir: str = "logs/",
     **kwargs,
 ) -> ActionMasker:
     """
@@ -114,9 +138,10 @@ def make_single_agent_env(
         reward_config: coeficientes de reward (de config.yaml)
         opponent:      jugador oponente (Player de poke-env).
                        Si es None, se usa SimpleHeuristicsPlayer.
+        log_dir:       directorio donde guardar training_battle_report.md
         **kwargs:      argumentos para ShowdownEnv.
     """
-    env = ShowdownEnv(reward_config=reward_config, **kwargs)
+    env = ShowdownEnv(reward_config=reward_config, log_dir=log_dir, **kwargs)
 
     if opponent is None:
         battle_format = kwargs.get("battle_format", "gen9randombattle")
@@ -149,6 +174,13 @@ class SelfPlayOpponent(Player):
         self._model = model
 
     def choose_move(self, battle: AbstractBattle):
+        # Turno de espera: el servidor solo acepta /choose default
+        if getattr(battle, '_wait', False):
+            return self.choose_default_move()
+        # Sin opciones disponibles: también default
+        if not battle.available_moves and not battle.available_switches:
+            return self.choose_default_move()
+
         obs  = encode_battle(battle)
         mask = np.array(get_action_mask(battle), dtype=bool)
 

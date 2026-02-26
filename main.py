@@ -94,6 +94,14 @@ def parse_args():
         action="store_true",
         help="[ladder] Solo evaluar, no seguir entrenando durante las partidas",
     )
+    parser.add_argument(
+        "--opponent-model",
+        default=None,
+        help=(
+            "[self_play --vs-self] Ruta a un modelo fijo como oponente (sin .zip). "
+            "Si se indica, el oponente NO actualiza sus pesos durante el entrenamiento."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -107,6 +115,7 @@ def main():
             resume=args.resume,
             vs_self=args.vs_self,
             tag=args.tag,
+            opponent_model_path=args.opponent_model,
         )
 
     elif args.mode == "ladder":

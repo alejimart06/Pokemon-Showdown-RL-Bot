@@ -32,6 +32,15 @@ def get_action_mask(battle: AbstractBattle) -> np.ndarray:
     """
     mask = np.zeros(ACTION_SPACE_SIZE, dtype=bool)
 
+    # Turno de espera (_wait=True): el servidor solo acepta /choose default.
+    # available_moves/switches pueden no estar vacíos en este estado,
+    # por eso hay que chequear _wait explícitamente.
+    # Turno forzado: lista vacía o solo /choose default
+    valid = battle.valid_orders
+    if len(valid) == 0 or (len(valid) == 1 and str(valid[0]) == '/choose default'):
+        mask[6] = True  # acción arbitraria; action_to_order lo convierte a default
+        return mask
+
     # ---------------------------------------------------------------
     # Switches (acciones 0-5): slot i es válido si:
     #   - El pokemon en ese slot existe en el equipo
@@ -93,10 +102,11 @@ def get_action_mask(battle: AbstractBattle) -> np.ndarray:
                     mask[22 + i] = True
 
     # ---------------------------------------------------------------
-    # Garantía mínima: si ninguna acción es válida, permitir todas
-    # (no debería ocurrir, pero evita que el agente se bloquee)
+    # Garantía mínima: si ninguna acción es válida es un turno forzado
+    # (/choose default). Permitir solo acción 6 — action_to_order con
+    # strict=False lo resolverá como default sin enviar orden inválida.
     # ---------------------------------------------------------------
     if not mask.any():
-        mask[:] = True
+        mask[6] = True
 
     return mask

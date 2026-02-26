@@ -52,15 +52,18 @@ def run_self_play(
     resume: str | None = None,
     vs_self: bool = False,
     tag: str | None = None,
+    opponent_model_path: str | None = None,
 ):
     """
     Lanza el entrenamiento self-play.
 
     Args:
-        config_path: ruta al archivo de configuracion
-        resume:      ruta a modelo guardado para continuar (sin .zip)
-        vs_self:     True = self-play real (agente vs copia de si mismo)
-        tag:         etiqueta de version, p.ej. 'v2'. Sin tag = v1 (retrocompatible)
+        config_path:          ruta al archivo de configuracion
+        resume:               ruta a modelo guardado para continuar (sin .zip)
+        vs_self:              True = self-play real (agente vs copia de si mismo)
+        tag:                  etiqueta de version, p.ej. 'v2'. Sin tag = v1 (retrocompatible)
+        opponent_model_path:  si se indica, usa este modelo como oponente FIJO (no actualiza
+                              sus pesos). Util para entrenar v2.1 contra v2.0.
     """
     config       = load_config(config_path)
     training_cfg = config.get("training", {})
@@ -78,7 +81,7 @@ def run_self_play(
 
     if vs_self:
         # ----------------------------------------------------------------
-        # Fase 2: self-play real — el oponente usa el modelo PPO
+        # Fase 2: self-play — el oponente usa un modelo PPO
         # ----------------------------------------------------------------
         if not resume:
             raise ValueError(
@@ -86,42 +89,87 @@ def run_self_play(
                 f"  --resume models/{tag + '_' if tag else ''}vs_heuristic/final_model"
             )
 
-        print(f"{version_label} Modo: agente vs si mismo")
-
         from poke_env.player import SimpleHeuristicsPlayer
-        # Placeholder para poder construir el env antes de tener el modelo
-        placeholder_opp = SimpleHeuristicsPlayer(
-            battle_format=battle_format,
-            server_configuration=server_cfg,
-        )
 
-        env   = make_single_agent_env(
-            reward_config=reward_cfg,
-            battle_format=battle_format,
-            server_configuration=server_cfg,
-            opponent=placeholder_opp,
-        )
-        agent = load_agent(resume, env)
+        if opponent_model_path:
+            # --------------------------------------------------------
+            # Oponente FIJO: cargamos un modelo externo que NO cambia
+            # durante el entrenamiento (ej. v2.0 como oponente de v2.1)
+            # --------------------------------------------------------
+            print(f"{version_label} Modo: agente vs oponente fijo ({opponent_model_path})")
 
-        # Crear oponente real con los pesos del modelo cargado
-        opponent = SelfPlayOpponent(
-            model=agent,
-            battle_format=battle_format,
-            server_configuration=server_cfg,
-        )
+            # Placeholder para construir el env del agente
+            placeholder_opp = SimpleHeuristicsPlayer(
+                battle_format=battle_format,
+                server_configuration=server_cfg,
+            )
+            env   = make_single_agent_env(
+                reward_config=reward_cfg,
+                battle_format=battle_format,
+                server_configuration=server_cfg,
+                opponent=placeholder_opp,
+            )
+            agent = load_agent(resume, env)
 
-        # Recrear env con el oponente real
-        env = make_single_agent_env(
-            reward_config=reward_cfg,
-            battle_format=battle_format,
-            server_configuration=server_cfg,
-            opponent=opponent,
-        )
-        agent.set_env(env)
+            # Cargar el modelo fijo del oponente
+            from src.agent.rl_agent import load_agent as _load
+            fixed_model = _load(opponent_model_path, env)
 
-        callbacks = build_callbacks(config, model_dir) + [
-            _UpdateOpponentCallback(opponent, agent, update_freq)
-        ]
+            opponent = SelfPlayOpponent(
+                model=fixed_model,
+                battle_format=battle_format,
+                server_configuration=server_cfg,
+            )
+
+            # Recrear env con el oponente fijo
+            env = make_single_agent_env(
+                reward_config=reward_cfg,
+                battle_format=battle_format,
+                server_configuration=server_cfg,
+                opponent=opponent,
+            )
+            agent.set_env(env)
+
+            # Sin _UpdateOpponentCallback → oponente NO cambia sus pesos
+            callbacks = build_callbacks(config, model_dir)
+
+        else:
+            # --------------------------------------------------------
+            # Self-play curriculo: el oponente se actualiza cada N steps
+            # --------------------------------------------------------
+            print(f"{version_label} Modo: agente vs si mismo")
+
+            placeholder_opp = SimpleHeuristicsPlayer(
+                battle_format=battle_format,
+                server_configuration=server_cfg,
+            )
+            env   = make_single_agent_env(
+                reward_config=reward_cfg,
+                battle_format=battle_format,
+                server_configuration=server_cfg,
+                opponent=placeholder_opp,
+            )
+            agent = load_agent(resume, env)
+
+            # Crear oponente con los pesos del modelo cargado
+            opponent = SelfPlayOpponent(
+                model=agent,
+                battle_format=battle_format,
+                server_configuration=server_cfg,
+            )
+
+            # Recrear env con el oponente
+            env = make_single_agent_env(
+                reward_config=reward_cfg,
+                battle_format=battle_format,
+                server_configuration=server_cfg,
+                opponent=opponent,
+            )
+            agent.set_env(env)
+
+            callbacks = build_callbacks(config, model_dir) + [
+                _UpdateOpponentCallback(opponent, agent, update_freq)
+            ]
 
     else:
         # ----------------------------------------------------------------

@@ -46,16 +46,25 @@ FORMULAS Y CALCULOS USADOS
 
 =============================================================================
 
-Estructura del vector de observacion (570 dims):
-  1. Pokemon activo propio  (138): HP + tipos + estado + boosts + stats + moves
-  2. Analisis de combate    ( 36): 4 moves x 8 dims + 4 globales
+Estructura del vector de observacion (637 dims) — v3:
+  1. Pokemon activo propio  (171): HP + tipos + estado + boosts + stats + moves(27x4)
+                                   + volatile(6) + tera(19)
+  2. Analisis de combate    ( 36): 4 moves x 8 dims + 4 globales (Trick Room corregido)
   3. Analisis de cambios    ( 30): 5 reservas x 6 dims
   4. Reserva propia x5      (100): 5 x (HP + tipos + disponible)
-  5. Pokemon activo enemigo (138)
+  5. Pokemon activo enemigo (171)
   6. Reserva enemiga x5     (100)
-  7. Campo                  ( 28): clima + terreno + pantallas + hazards
+  7. Campo                  ( 29): clima + terreno + pantallas + hazards + trick_room
 
-TOTAL: 138 + 36 + 30 + 100 + 138 + 100 + 28 = 570
+TOTAL: 171 + 36 + 30 + 100 + 171 + 100 + 29 = 637
+
+Novedades v3 respecto a v2:
+  - Prioridad de movimiento (Quick Attack +1, Trick Room -7, etc.)
+  - Disponibilidad del movimiento (Choice lock, Encore, Disable, Taunt, PP=0)
+  - Estados volatiles: Substitute, Taunt, Encore, Confusion, Trapped, Leech Seed
+  - Tera Type (is_terastallized + tera_type one-hot 18 dims)
+  - Trick Room activo en campo
+  - own_faster corregido cuando Trick Room esta activo
 """
 
 import math
@@ -63,6 +72,13 @@ import numpy as np
 from poke_env.battle import (
     AbstractBattle, Pokemon, Move, Weather, Field, SideCondition, Status, PokemonType
 )
+
+# Effect enum: disponible en poke-env para rastrear estados volatiles
+# Importacion defensiva por si la version instalada no lo expone
+try:
+    from poke_env.battle import Effect
+except ImportError:
+    Effect = None
 
 # Importar tablas de items y habilidades
 from src.state.items_and_abilities import (
@@ -860,7 +876,12 @@ def _encode_combat_analysis(own: Pokemon, opp: Pokemon, battle) -> np.ndarray:
     if opp is not None:
         own_spe = _real_speed(own, battle)
         opp_spe = _real_speed(opp, battle)
-        global_vec[0] = 1.0 if own_spe > opp_spe else 0.0
+        # Trick Room invierte el orden: el mas lento actua primero
+        trick_room_active = battle is not None and Field.TRICK_ROOM in (battle.fields or {})
+        if trick_room_active:
+            global_vec[0] = 1.0 if own_spe < opp_spe else 0.0
+        else:
+            global_vec[0] = 1.0 if own_spe > opp_spe else 0.0
 
         # Probabilidades de KO con rango completo 0.85-1.0
         global_vec[1] = _ko_probability(opp, own, battle=battle, is_own_attack=False)
@@ -903,11 +924,11 @@ def _encode_boosts(pokemon: Pokemon) -> np.ndarray:
     return vec
 
 
-def _encode_move(move: "Move | None", pokemon: Pokemon) -> np.ndarray:
-    """tipo(18) + categoria(3) + potencia(1) + precision(1) + PP(1) + STAB(1) = 25"""
+def _encode_move(move: "Move | None", pokemon: Pokemon, is_available: bool = True) -> np.ndarray:
+    """tipo(18) + categoria(3) + potencia(1) + precision(1) + PP(1) + STAB(1) + prioridad(1) + disponible(1) = 27"""
     if move is None:
-        return np.zeros(25, dtype=np.float32)
-    vec = np.zeros(25, dtype=np.float32)
+        return np.zeros(27, dtype=np.float32)
+    vec = np.zeros(27, dtype=np.float32)
     if move.type in TYPES:
         vec[TYPES.index(move.type)] = 1.0
     cat_map = {"physical": 0, "special": 1, "status": 2}
@@ -920,11 +941,53 @@ def _encode_move(move: "Move | None", pokemon: Pokemon) -> np.ndarray:
     else:
         vec[23] = 1.0
     vec[24] = 1.0 if move.type in (pokemon.types or []) else 0.0
+    # [25] Prioridad normalizada: rango real [-7, +5] → dividimos entre 7 para cubrir el maximo
+    vec[25] = float(getattr(move, 'priority', 0)) / 7.0
+    # [26] Disponible: 1 si el movimiento es usable este turno (no bloqueado por Choice/Encore/Disable/Taunt)
+    vec[26] = 1.0 if is_available else 0.0
     return vec
 
 
-def _encode_active_pokemon(pokemon: Pokemon, is_own: bool) -> np.ndarray:
-    """HP(1) + tipos(18) + estado(7) + boosts(7) + stats(5) + moves(100) = 138"""
+def _encode_volatile_statuses(pokemon: Pokemon, is_own: bool) -> np.ndarray:
+    """
+    6 dims: substitute, taunted, encored, confused, trapped, leech_seeded.
+    Para el rival: leech_seeded siempre 0 (no observable directamente).
+    Usa el enum Effect de poke-env si esta disponible; si no, devuelve ceros.
+    """
+    effects = getattr(pokemon, 'effects', {}) or {}
+
+    def has_effect(name: str) -> bool:
+        if Effect is None:
+            return False
+        e = getattr(Effect, name, None)
+        return e is not None and e in effects
+
+    return np.array([
+        float(has_effect('SUBSTITUTE')),
+        float(has_effect('TAUNT')),
+        float(has_effect('ENCORE')),
+        float(has_effect('CONFUSION')),
+        float(has_effect('PARTIALLY_TRAPPED') or has_effect('BIND')),
+        float(has_effect('LEECH_SEED')) if is_own else 0.0,
+    ], dtype=np.float32)
+
+
+def _encode_tera(pokemon: Pokemon) -> np.ndarray:
+    """
+    19 dims: is_terastallized(1) + tera_type one-hot(18).
+    El tera_type del rival es 0 hasta que terastaliza (en ese momento poke-env lo revela).
+    """
+    vec = np.zeros(19, dtype=np.float32)
+    is_tera   = getattr(pokemon, 'is_terastallized', False) or False
+    tera_type = getattr(pokemon, 'tera_type', None)
+    vec[0] = 1.0 if is_tera else 0.0
+    if tera_type is not None and tera_type in TYPES:
+        vec[1 + TYPES.index(tera_type)] = 1.0
+    return vec
+
+
+def _encode_active_pokemon(pokemon: Pokemon, is_own: bool, battle=None) -> np.ndarray:
+    """HP(1) + tipos(18) + estado(7) + boosts(7) + stats(5) + moves(108) + volatile(6) + tera(19) = 171"""
     parts = [
         np.array([pokemon.current_hp_fraction], dtype=np.float32),
         _encode_types(pokemon),
@@ -939,11 +1002,19 @@ def _encode_active_pokemon(pokemon: Pokemon, is_own: bool) -> np.ndarray:
             stats.get("spe", 0) / 255.0,
         ], dtype=np.float32))
         moves = list(pokemon.moves.values())
+        # IDs de movimientos actualmente disponibles (para detectar Choice lock, Encore, etc.)
+        available_ids = {m.id for m in (battle.available_moves or [])} if battle else set()
         for i in range(N_MOVES):
-            parts.append(_encode_move(moves[i] if i < len(moves) else None, pokemon))
+            mv = moves[i] if i < len(moves) else None
+            is_avail = (mv is not None and mv.id in available_ids) if available_ids else True
+            parts.append(_encode_move(mv, pokemon, is_available=is_avail))
     else:
         parts.append(np.zeros(5, dtype=np.float32))
-        parts.append(np.zeros(N_MOVES * 25, dtype=np.float32))
+        parts.append(np.zeros(N_MOVES * 27, dtype=np.float32))
+    # Estados volatiles (6 dims): Substitute, Taunt, Encore, Confusion, Trapped, Leech Seed
+    parts.append(_encode_volatile_statuses(pokemon, is_own=is_own))
+    # Tera Type (19 dims): is_terastallized + tera_type one-hot
+    parts.append(_encode_tera(pokemon))
     return np.concatenate(parts)
 
 
@@ -1031,6 +1102,10 @@ def _encode_field(battle: AbstractBattle) -> np.ndarray:
     web_opp   = float(SideCondition.STICKY_WEB in opp_sides)
     parts.append(np.array([sr_opp, spk_opp, tspk_opp, web_opp], dtype=np.float32))
 
+    # Trick Room (1 dim) — invierte el orden de velocidades mientras esta activo
+    trick_room = float(Field.TRICK_ROOM in battle.fields) if battle.fields else 0.0
+    parts.append(np.array([trick_room], dtype=np.float32))
+
     return np.concatenate(parts)
 
 
@@ -1058,9 +1133,9 @@ def encode_battle(battle: AbstractBattle) -> np.ndarray:
 
     parts = []
 
-    # 1. Activo propio (138)
+    # 1. Activo propio (171)
     parts.append(
-        _encode_active_pokemon(own_active, is_own=True)
+        _encode_active_pokemon(own_active, is_own=True, battle=battle)
         if own_active else np.zeros(_active_pokemon_size(), dtype=np.float32)
     )
 
@@ -1081,9 +1156,9 @@ def encode_battle(battle: AbstractBattle) -> np.ndarray:
     for i in range(5):
         parts.append(_encode_reserve_pokemon(own_team[i] if i < len(own_team) else None))
 
-    # 5. Activo enemigo (138)
+    # 5. Activo enemigo (171)
     parts.append(
-        _encode_active_pokemon(opp_active, is_own=False)
+        _encode_active_pokemon(opp_active, is_own=False, battle=battle)
         if opp_active else np.zeros(_active_pokemon_size(), dtype=np.float32)
     )
 
@@ -1102,7 +1177,8 @@ def encode_battle(battle: AbstractBattle) -> np.ndarray:
 # ===========================================================================
 
 def _active_pokemon_size() -> int:
-    return 1 + 18 + 7 + 7 + 5 + (N_MOVES * 25)   # = 138
+    # HP(1) + tipos(18) + estado(7) + boosts(7) + stats(5) + moves(27x4) + volatile(6) + tera(19)
+    return 1 + 18 + 7 + 7 + 5 + (N_MOVES * 27) + 6 + 19   # = 171
 
 
 def _combat_analysis_size() -> int:
@@ -1114,21 +1190,21 @@ def _switch_analysis_size() -> int:
 
 
 def get_observation_size() -> int:
-    """Devuelve el tamaño total del vector de observacion (570)."""
-    active  = _active_pokemon_size()   # 138
-    combat  = _combat_analysis_size()  #  36
-    switch  = _switch_analysis_size()  #  30
+    """Devuelve el tamaño total del vector de observacion (637) — v3."""
+    active  = _active_pokemon_size()        # 171
+    combat  = _combat_analysis_size()       #  36
+    switch  = _switch_analysis_size()       #  30
     reserve = 20
-    field   = 9 + 5 + 3 + 3 + 4 + 4  #  28  (+ hazards propios + hazards rivales)
+    field   = 9 + 5 + 3 + 3 + 4 + 4 + 1   #  29  (clima+terreno+pantallas+hazards+trick_room)
     return (
-        active +       # propio activo    138
+        active +       # propio activo    171
         combat +       # combate           36
         switch +       # cambios           30
         5 * reserve +  # reserva propia   100
-        active +       # enemigo activo   138
+        active +       # enemigo activo   171
         5 * reserve +  # reserva enemiga  100
-        field          # campo             28
-    )   # = 570
+        field          # campo             29
+    )   # = 637
 
 
 OBS_SIZE = get_observation_size()
